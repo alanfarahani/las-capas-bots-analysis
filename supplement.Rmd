@@ -1,0 +1,333 @@
+---
+title: "Analysis of Las Capas Paleoethnobotanical Data"
+author: "R. J. Sinensky and A. Farahani"
+date: ""
+output: 
+  rmdformats::readthedown:
+    number_sections: false
+    df_print: paged
+    highlight: breezedark
+    fig_caption: true
+---
+
+<style type="text/css">
+
+.main-container {
+  max-width: 1200px !important;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+pre code {
+  word-wrap: normal !important;
+  overflow-x: auto !important;
+  white-space: pre !important;
+  max-width: 1200px !important;
+}
+
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      warning = FALSE,
+                      message = FALSE,
+                      tidy.opts=list(width.cutoff=150),
+                      tidy = FALSE
+                      )
+
+# These packages are necessary for all subsequent analysis 
+# and can be installed via the install.packages() function
+library(plyr)
+library(dplyr)
+library(ggplot2)
+library(lazyeval)
+library(vegan)
+library(reshape2)
+```
+
+# Introduction
+This markdown provides the ability to reproduce Figures 5c, 5d, 7a, 7b, and 7d in [Sinensky, R. J. and Farahani, A. 2018. Diversity-disturbance relationships in the Late Archaic Southwest: implications for farmer-forager foodways. American Antiquity 83: 281-301.](https://www.researchgate.net/profile/R-J-Sinensky/publication/323364157_Diversity-Disturbance_Relationships_in_the_Late_Archaic_Southwest_Implications_for_Farmer-Forager_Foodways/links/62244cef84ce8e5b4d0a33b9/Diversity-Disturbance-Relationships-in-the-Late-Archaic-Southwest-Implications-for-Farmer-Forager-Foodways.pdf).
+
+Please note that the code in this document has been updated since its original publication as a supplement in 2018.  Several functions in the `dplyr` package have been deprecated and the syntax has been updated for this document.  This code will be continued to be updated as necessary, so please contact me if there are any issues.
+
+If there are any questions, please contact Alan Farahani at [alanfarahani\@gmail.com](mailto:alanfarahani@gmail.com){.email}.
+
+# Loading the Data
+*Please note that the CSV files should be in the same folder as this .RMD file.*
+
+```{r, echo = TRUE}
+las_capas_data = read.csv("sinensky_and_farahani_2018_paleoethnobotanical_data.csv")
+estimate_s_output = read.csv("sinensky_and_farahani_2018_estimates_output.csv")
+
+# These FN's are numerical outliers -- these fifteen samples alone add 18,000 additional specimens
+# in just two strata -- it should be noted that their inclusion or exclusion dramatically
+# affects the quantitative outcomes of several tests presented here
+outlier.fns = c(349, 1673, 4748, 5017, 7872, 7882, 13080, 102838, 102838, 103129, 104578, 104648, 104737, 104781, 105249)
+las_capas_data$outlier = ifelse(las_capas_data$FN %in% outlier.fns,1,0)
+
+# This is generally used in the following analyses
+strat_list = list("504" = "TSP", "505" = "MSP", "506" = "ISP")
+```
+
+# Figures
+
+## Figure 5 {.tabset .tabset-fade}
+
+### Figure 5c
+
+This is a custom function to easily create data frames to procure moment trends from a given data frame and grouping variable.  This function was used to generate a summary of maize ubiquity, which is the proportional presence of a taxon across samples.
+
+```{r, echo = TRUE}
+
+easyCI = function(df, grp_var, variable){
+
+    v_var = enquo(variable)
+
+    df1 = df %>%
+      group_by({{ grp_var }}) %>%
+      summarise(
+       n = n(),
+       median = median(!!v_var,na.rm=TRUE),
+       mean = mean(!!v_var,na.rm=TRUE),
+       sd = sd(!!v_var,na.rm=TRUE),
+       se = (sd/sqrt(n)),
+       lowerCI=mean+(qt(.025,n-1)*se),
+       upperCI=mean-(qt(.025,n-1)*se)
+      )
+    
+    df1 = as.data.frame(df1)
+    
+    return(df1)
+
+}
+
+maize_summary = las_capas_data %>%
+  mutate(Zea_mays = ifelse(Zea_mays>0,1,0)) %>%
+  easyCI(Stratum, Zea_mays) %>%
+  mutate(Stratum = recode(Stratum,!!!strat_list))
+
+maize_summary %>%
+  ggplot(aes(Stratum,mean)) +
+  geom_point(size=3) +
+  geom_errorbar(aes(ymin=lowerCI,ymax=upperCI), width=.2) +
+  theme_bw(base_size = 20)+
+  ggtitle("Maize Ubiquity")+
+  xlab("\nStratum") +
+  ylab("Proportion of samples\n")
+```
+
+### Figure 5d
+Maize density here uses `log()` which computes natural logarithms, and therefore removes samples that have no data.  Therefore this plot only compares samples where $n_{Zea} > 1$.
+Mean density values presented in Table 1, however, include samples with no maize.
+
+```{r, echo = TRUE}
+las_capas_data %>%
+    mutate(ZeaDens = log(Zea_mays/Volume),
+           Stratum = as.factor(Stratum)
+           ) %>%
+    ggplot(aes(ZeaDens)) +
+    geom_density(aes(fill = Stratum), alpha = .5) +
+    theme_bw(base_size = 20) +
+    xlab("\nZea density log(#/L)") +
+    ylab("Probability density\n")
+```
+
+## Figure 7 {.tabset .tabset-fade}
+
+### Figure 7a
+This method uses the "random" permutation function in vegan, for more on this see the help file for the function `specaccum()`, which cites Gotelli and Colwell 2001.  Note that the "random" argument of `specaccum()` does samples *without* replacement.
+
+```{r, echo=TRUE}
+# set the stratum designations
+strat_titles = c(504,506,505)
+
+#create colors for our different strata
+redtrans = rgb(255, 0, 0, 127, maxColorValue=255)
+lightbluetrans = rgb(173, 216, 230, 200, maxColorValue=255)
+chartrans = rgb(102, 205, 0, 200, maxColorValue=255)
+
+# this loops through the data and creates a different species accumulation curve through random permutations of the data
+
+for (i in 1:length(strat_titles)){
+    x = las_capas_data %>% 
+        # filter (outlier == 0) %>%
+        select(Stratum, Achnatherum:Zea_mays,Volume) %>%
+        filter(Stratum == strat_titles[i]) %>%
+        select(-Stratum)
+    
+    spec_rich_accum = specaccum(x, method = "random",w=x$Volume)
+    
+    spec_rich_accum$richness = ifelse(is.na(spec_rich_accum$richness), 0, spec_rich_accum$richness)
+    spec_rich_accum$sd = ifelse(is.na(spec_rich_accum$sd), 0, spec_rich_accum$sd)
+    
+    if(i == 1){
+         plot(spec_rich_accum,xvar="effort",ci.type="poly", col="darkred", lwd=2, ci.lty=0, ci.col=redtrans, xlab = "Total Flotation Volume (L)", ylab = "Mean Richness")
+    }
+    else if(i == 2){
+       plot(spec_rich_accum,xvar="effort",ci.type="poly",col="blue", lwd=2, ci.lty=0, ci.col=lightbluetrans, add=TRUE)
+    }
+    else{
+        plot(spec_rich_accum,xvar="effort",ci.type="poly", col="darkgreen", lwd=2, ci.lty=0, ci.col=chartrans, add=TRUE)
+    }
+    
+}
+
+text(x = 3000, y = 33, label = "Stratum 506", col = redtrans, font = 2)
+text(x = 1000, y = 22, label = "Stratum 504", col = lightbluetrans, font = 2)
+text(x = 500, y = 38, label = "Stratum 505", col = chartrans, font = 2)
+
+```
+
+### Figure 7b
+
+Although the underlying species-accumulation curve was based on sampling without replacement, the option was chosen in the freely available Estimate S to sample with replacement due to its favorable qualities with respect to estimations of variance.  The settings included 100 permutations and no extrapolation of rarefaction curves.
+
+
+```{r, echo=TRUE}
+estimate_s_output %>% 
+  mutate(Stratum = as.factor(Stratum)) %>%
+  ggplot(aes(Individuals..computed.,Simpson.Inv.Mean)) +
+    geom_ribbon(aes(ymin = Simpson.Inv.Mean - 2*(Simpson.Inv.SD..runs.),
+                    ymax = Simpson.Inv.Mean + (2*Simpson.Inv.SD..runs.),
+                    fill = Stratum),
+                colour="black",alpha=.5) +
+    geom_point(aes(colour = Stratum)) +
+    theme_bw(base_size = 15) +
+    theme(panel.grid = element_blank()) +
+    xlab("Number of Identified Specimens (NISP)") +
+    ylab ("Mean Inverse Simpson's")
+```
+
+### Figure 7c
+Two possibilities of visualization of the density of Zea mays are presented here, one which was published, and the other which was not.  By commenting out the `filter()` function, the graph includes seven samples with extremely high Zea counts relative to other samples, and the standard published graph includes all of the data.
+
+`log()` was chosen over `log1p()`, although the two offer similar results.  The use of `log()` excludes samples that have no maize, which is equivalent to 248 samples.
+
+```{r, echo=TRUE}
+makeMaizePlot = function(excl_outliers = F, spec_title = ""){
+  
+  las_capas_data %>% {
+    if(excl_outliers) filter(., Zea_mays<80) else .
+  } %>%
+  mutate(logZeadens = log(Zea_mays/Volume), Stratum=as.factor(Stratum)) %>%
+  mutate(Stratum = factor(Stratum,levels = rev(levels(Stratum)))) %>%
+  ggplot(aes (Stratum, logZeadens, fill = Intramural)) + 
+    geom_boxplot() +
+    theme_bw(base_size = 15) + 
+    ggtitle(spec_title) + 
+    xlab("\nStratum") + 
+    ylab("Maize Density log(#/L)\n") +
+    scale_y_continuous(limits = c(-2.5, 5), breaks = c(-2,-1,0,1,2,5))
+}
+
+no_outlier_plot = makeMaizePlot(excl_outliers = T, spec_title = "No outliers")
+outlier_plot= makeMaizePlot(spec_title = "With outliers") + ylab("")
+
+ggpubr::ggarrange(
+  no_outlier_plot, 
+ outlier_plot, 
+  common.legend = T
+  )
+```
+
+## Figure 8 {.tabset .tabset-fade}
+
+### All remains
+```{r, echo = TRUE,}
+
+las_capas_summarized = las_capas_data %>%
+  mutate(
+       Cacti = Carnegiea + Cereus + Dasylirion + Echinocereus.Mammillaria + Ferocactus + Opuntia,
+       Ch_Am = Chenoam,
+       DCW = Astragalus + Boerhaavia + Cleome.Polanisia + Cucurbitaceae + Cyperaceae +
+             Eschscholtzia + Euphorbiaceae + Kallstroemia + Lamiaceae + Lepidium + Mollugo +
+             Oxalis + Papaveraceae + Polygonaceae + Portulaca + Sphaeralcea + Suaeda + Trianthema,
+       Stratum = as.factor(Stratum)
+       ) %>% 
+  select(Stratum,Cacti,Ch_Am,DCW)
+
+las_capas_summarized = las_capas_summarized %>%
+  group_by(Stratum) %>%
+  mutate(across(everything(), ~as.vector(decostand(.,method="pa"))))
+
+las_capas_summarized = las_capas_summarized %>%
+  melt(id = "Stratum") %>% 
+  ungroup %>%
+  group_by(Stratum,variable) %>%
+  summarize(n=n(), median = median(value,na.rm=TRUE),
+             mean = mean(value,na.rm=TRUE),
+             sd = sd(value,na.rm=TRUE),
+             se = (sd/sqrt(n)),
+             lowerCI = (mean+(qt(.025,n-1)*se)),
+             upperCI = (mean-(qt(.025,n-1)*se)))
+  
+las_capas_summarized %>%
+    mutate(variable = recode(variable,"Ch_Am" = "Cheno Ams", "DCW" = "Dispersed Ruderals")) %>%
+    ggplot(aes(Stratum , mean)) + 
+    geom_point(size=3, aes(shape = variable)) +
+    geom_errorbar(aes (ymin = lowerCI , ymax = upperCI) , width = .2) + 
+    scale_y_continuous(labels = c(0, .25, .50, .75, 1),
+                       limits = c(0,1)) +
+    coord_flip() + 
+    theme_bw(base_size = 15) + 
+    facet_wrap (~variable) + 
+    ggtitle("Plant Type Ubiquities")+
+    xlab("")+
+    ylab("\n Proportion of samples")+
+    theme(legend.position = "none")
+
+```
+
+### Cacti
+```{r, echo = TRUE}
+intramural_cactus = las_capas_data %>%
+  mutate(
+    Cacti = Carnegiea + Cereus + Dasylirion + Echinocereus.Mammillaria + Ferocactus + Opuntia,
+    Stratum = as.factor(Stratum)
+  ) %>% 
+  select(Stratum,Intramural,Cacti) %>%
+  group_by(Stratum,Intramural) %>%
+  mutate(across(everything(), ~as.vector(decostand(.,method="pa")))) %>%
+  melt() %>% 
+  group_by(Stratum,Intramural) %>% 
+  summarize(n=n(), median = median(value,na.rm=TRUE),
+               mean = mean(value,na.rm=TRUE),
+               sd = sd(value,na.rm=TRUE),
+               se = (sd/sqrt(n)),
+               lowerCI = (mean+(qt(.025,n-1)*se)),
+               upperCI = (mean-(qt(.025,n-1)*se)))
+
+las_capas_data %>%
+  mutate(
+    Cacti = Carnegiea + Cereus + Dasylirion + Echinocereus.Mammillaria + Ferocactus + Opuntia,
+    Stratum = as.factor(Stratum)
+    ) %>% 
+  select(Stratum,Cacti) %>%
+  group_by(Stratum) %>%
+  mutate(across(everything(), ~as.vector(decostand(.,method="pa")))) %>%
+  melt() %>%
+  group_by(Stratum) %>% 
+  summarize(n=n(), median = median(value,na.rm=TRUE),
+               mean = mean(value,na.rm=TRUE),
+               sd = sd(value,na.rm=TRUE),
+               se = (sd/sqrt(n)),
+               lowerCI = (mean+(qt(.025,n-1)*se)),
+               upperCI = (mean-(qt(.025,n-1)*se))) %>%
+  ggplot(aes(Stratum , mean)) + 
+    geom_point(size = 3) +
+    geom_point(data = intramural_cactus,
+               aes(y=mean, fill=Intramural),
+               size = 3, position = position_dodge(width = .5),
+               shape = 21
+               ) +
+    geom_errorbar(aes(ymin = lowerCI , ymax = upperCI), width = .2) + 
+    scale_y_continuous(labels = c(0, .25, .50, .75, 1),
+                       limits = c(0,1)
+                       ) +
+    scale_fill_brewer(palette = "Set1") +
+    coord_flip() + 
+    theme_bw(base_size = 20) + 
+    ggtitle("Cacti Ubiquities")+
+    xlab("Stratum\n")+
+    ylab("\nProportion of samples")
+```
