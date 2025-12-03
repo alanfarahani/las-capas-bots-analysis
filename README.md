@@ -44,7 +44,7 @@ The best explanation of the project is in the article abstract (which this summa
 events during the Middle San Pedro phase (930–800 BC) preceded the greatest richness and diversity of harvested plants,
 while during periods with little environmental disturbance, maize was more dominant,  We interpreted these findings against the backdrop of several different competing paradigms in ecology that attempt to model the effect of environmental disturbance on species richness (= number of different kinds of biological taxonomic entities).
 
-See the compiled analyses and figures **<a href = "http://thebalkarchaeology.com/markdowns/las_capas_figures.html" target = "_new"> here</a>**.
+See the compiled analyses and figures **<a href = "http://alanfarahani.com/markdowns/las_capas_figures.html" target = "_new"> here</a>**.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
